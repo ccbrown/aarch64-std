@@ -48,28 +48,18 @@ impl<T: ?Sized> Mutex<T> {
     /// This function might panic when called if the lock is already held by
     /// the current thread.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        unsafe {
-            asm!(
-                "sevl",
-                "1:",
-                "wfe",
-                "ldaxr {1:w}, [{0}]",
-                "cmp {1:w}, 0",
-                "bne 1b",
-                "mov {2:w}, 1",
-                "stlxr {1:w}, {2:w}, [{0}]",
-                "cmp {1:w}, 0",
-                "bne 1b",
-                in(reg) &self.is_locked as *const u32 as u64,
-                out(reg) _,
-                out(reg) _,
-                options(nostack),
-            );
+        aarch64_cpu::asm::sevl();
+        loop {
+            aarch64_cpu::asm::wfe();
+            match self.try_lock() {
+                Ok(g) => return Ok(g),
+                Err(TryLockError::WouldBlock) => {
+                    #[cfg(feature = "alloc")]
+                    crate::thread::yield_now();
+                    continue;
+                }
+            }
         }
-        Ok(MutexGuard {
-            lock: self,
-            _make_unsend: PhantomData,
-        })
     }
 
     /// Attempts to acquire this lock.
@@ -88,15 +78,15 @@ impl<T: ?Sized> Mutex<T> {
         let mut result: u32;
         unsafe {
             asm!(
-                "ldaxr {2:w}, [{0}]",
-                "cmp {2:w}, 0",
+                "ldaxr {result:w}, [{is_locked_addr}]",
+                "cmp {result:w}, 0",
                 "bne 1f",
-                "mov {1:w}, 1",
-                "stlxr {2:w}, {1:w}, [{0}]",
+                "mov {tmp:w}, 1",
+                "stlxr {result:w}, {tmp:w}, [{is_locked_addr}]",
                 "1:",
-                in(reg) &self.is_locked as *const u32 as u64,
-                out(reg) _,
-                out(reg) result,
+                is_locked_addr = in(reg) &self.is_locked as *const u32 as u64,
+                tmp = out(reg) _,
+                result = out(reg) result,
                 options(nostack),
             );
         }

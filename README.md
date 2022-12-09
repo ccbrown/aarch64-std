@@ -2,7 +2,23 @@
 
 aarch64-std implements components from the Rust standard library in a way suitable for `no_std` or bare metal ARM applications.
 
-It's designed to mimic the standard library APIs as closely as possible and work out of the box on any aarch64 platform, from microcontrollers to Zynq UltraScale+ MPSoCs to M1 Macs.
+## Design Goals
+
+In order:
+
+1. Run on any aarch64 platform at EL0. Anything from microcontrollers to Zynq UltraScale+ MPSoCs to M1 Macs should just work.
+2. Mimic the standard library APIs as closely as possible. For the most part these modules are drop-in replacements for the standard library.
+3. Perform as efficiently as possible.
+
+## Highlights
+
+- `thread::sleep`
+- `thread::spawn` and friends.
+   - Uses non-preemptive green threads.
+   - As many cores as you'd like can participate using `thread::contribute`.
+   - Threads yield via the standard `thread::yield_now` function.
+- `sync::Mutex`
+- `time::Instant`
 
 ## Cargo Features
 
