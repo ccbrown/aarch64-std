@@ -12,14 +12,17 @@ In order:
 
 ## Highlights
 
-- `thread::sleep`
-- `thread::spawn` and friends.
-   - Uses non-preemptive green threads.
-   - As many cores as you'd like can participate using `thread::contribute`.
-   - Threads yield via the standard `thread::yield_now` function.
-- `sync::Mutex`
-- `time::Instant`
+- `sync`
+  - `Mutex`
+- `thread`
+  - `sleep`
+  - `spawn`
+    - Uses non-preemptive green threads.
+    - As many cores as you'd like can participate using `thread::contribute`.
+    - Threads yield via the standard `thread::yield_now` function.
+- `time`
+  - `Instant`
 
 ## Cargo Features
 
-- "alloc" enables functionality which requires the use of the [alloc](https://doc.rust-lang.org/alloc/index.html) crate. It's enabled by default, but may be disabled if you don't have an allocator available.
+- "alloc" enables functionality which requires the use of the [alloc](https://doc.rust-lang.org/alloc/index.html) crate. It's enabled by default, but may be disabled if you don't have an allocator available. Currently the only thing that requires this feature is `thread::spawn`.
