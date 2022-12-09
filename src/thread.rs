@@ -92,6 +92,7 @@ mod runtime {
     struct Registers {
         // These are the registers we have to keep track of ourselves. The rest are handled by the
         // compiler based on the inline assembly directives.
+        x18: u64,
         x19: u64,
         x29: u64,
         x30: u64,
@@ -143,12 +144,14 @@ mod runtime {
                     // we're starting a new thread
                     "mov x1, sp",
                     "mov sp, {stack}",
+                    "str x18, [sp, #-16]!",
                     "stp x19, x29, [sp, #-16]!",
                     "stp x1, lr, [sp, #-16]!",
                     "blr {entry}",
                     // if we make it back here, that means the thread's ended
                     "ldp x1, lr, [sp], #16",
                     "ldp x19, x29, [sp], #16",
+                    "ldr x18, [sp], #16",
                     "mov sp, x1",
                     // set did_end = 1
                     "mov x1, #1",
@@ -156,25 +159,28 @@ mod runtime {
 
                     "1:",
                     // we're resuming a thread
-                    // restore x19, x29, lr, and sp from x8-x11
-                    "mov x19, x8",
-                    "mov x29, x9",
-                    "mov lr, x10",
-                    "mov sp, x11",
+                    // restore x18, x19, x29, lr, and sp from x8-x12
+                    "mov x18, x8",
+                    "mov x19, x9",
+                    "mov x29, x10",
+                    "mov lr, x11",
+                    "mov sp, x12",
                     // then jump back to that location
                     "b aarch64_std_unyield",
 
                     "aarch64_std_yield:",
                     // we're yielding to another thread.
                     // yield_now put our original stack pointer in x0
-                    // save x19, x29, lr, and sp to x8-x11
-                    "mov x8, x19",
-                    "mov x9, x29",
-                    "mov x10, lr",
-                    "mov x11, sp",
+                    // save x18, x19, x29, lr, and sp to x8-x12
+                    "mov x8, x18",
+                    "mov x9, x19",
+                    "mov x10, x29",
+                    "mov x11, lr",
+                    "mov x12, sp",
                     // then restore the originals
-                    "ldp x19, x29, [x0, #-16]",
-                    "ldp x1, lr, [x0, #-32]",
+                    "ldr x18, [x0, #-16]",
+                    "ldp x19, x29, [x0, #-32]",
+                    "ldp x1, lr, [x0, #-48]",
                     "mov sp, x1",
                     // set did_end = 0
                     "mov x1, #0",
@@ -187,12 +193,13 @@ mod runtime {
                     // saving and restoring most of the registers
                     out("x1") did_end, out("x2") _, out("x3") _,
                     out("x4") _, out("x5") _, out("x6") _, out("x7") _,
-                    inout("x8") self.registers.x19,
-                    inout("x9") self.registers.x29,
-                    inout("x10") self.registers.x30,
-                    inout("x11") self.registers.sp,
-                    out("x12") _, out("x13") _, out("x14") _, out("x15") _,
-                    out("x16") _, out("x17") _, out("x18") _,
+                    inout("x8") self.registers.x18,
+                    inout("x9") self.registers.x19,
+                    inout("x10") self.registers.x29,
+                    inout("x11") self.registers.x30,
+                    inout("x12") self.registers.sp,
+                    out("x13") _, out("x14") _, out("x15") _,
+                    out("x16") _, out("x17") _,
                     out("x20") _, out("x21") _, out("x22") _, out("x23") _,
                     out("x24") _, out("x25") _, out("x26") _, out("x27") _,
                     out("x28") _,
@@ -298,7 +305,7 @@ mod runtime {
         #[inline(never)]
         fn yield_now(&self) {
             let t = {
-                let state = self.state.lock().unwrap();
+                let state = self.state.lock_impl(false).unwrap();
                 if state.queue.is_empty() {
                     // There are no pending threads.
                     unsafe { asm!("yield") };
@@ -337,7 +344,7 @@ mod runtime {
                     out("x4") _, out("x5") _, out("x6") _, out("x7") _,
                     out("x8") _, out("x9") _, out("x10") _, out("x11") _,
                     out("x12") _, out("x13") _, out("x14") _, out("x15") _,
-                    out("x16") _, out("x17") _, out("x18") _,
+                    out("x16") _, out("x17") _,
                     out("x20") _, out("x21") _, out("x22") _, out("x23") _,
                     out("x24") _, out("x25") _, out("x26") _, out("x27") _,
                     out("x28") _,
@@ -717,17 +724,6 @@ mod tests {
             .join()
             .unwrap();
         assert_ne!(a.id(), b.id());
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_thread_allocation() {
-        spawn(|| {
-            let mut v = Vec::new();
-            v.push(1);
-        });
-
-        contribute();
     }
 
     #[cfg(feature = "alloc")]

@@ -48,6 +48,10 @@ impl<T: ?Sized> Mutex<T> {
     /// This function might panic when called if the lock is already held by
     /// the current thread.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
+        self.lock_impl(true)
+    }
+
+    pub(crate) fn lock_impl(&self, _yield_on_fail: bool) -> LockResult<MutexGuard<'_, T>> {
         aarch64_cpu::asm::sevl();
         loop {
             aarch64_cpu::asm::wfe();
@@ -55,7 +59,9 @@ impl<T: ?Sized> Mutex<T> {
                 Ok(g) => return Ok(g),
                 Err(TryLockError::WouldBlock) => {
                     #[cfg(feature = "alloc")]
-                    crate::thread::yield_now();
+                    if _yield_on_fail {
+                        crate::thread::yield_now();
+                    }
                     continue;
                 }
             }
