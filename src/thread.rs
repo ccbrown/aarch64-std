@@ -26,10 +26,66 @@ pub fn sleep(d: Duration) {
 mod runtime {
     use crate::sync::Mutex;
     use alloc::{boxed::Box, collections::LinkedList, string::String, sync::Arc, vec::Vec};
-    use core::{arch::asm, convert::Infallible, marker::PhantomData};
+    use core::{any::Any, arch::asm, convert::Infallible, time::Duration};
     use tock_registers::interfaces::Readable;
 
-    pub struct JoinHandle<T>(PhantomData<T>);
+    pub type Result<T> = core::result::Result<T, Box<dyn Any + Send + 'static>>;
+
+    pub struct JoinHandle<T> {
+        result: Arc<Mutex<Option<Result<T>>>>,
+        thread: Thread,
+    }
+
+    impl<T> JoinHandle<T> {
+        /// Extracts a handle to the underlying thread.
+        #[must_use]
+        pub fn thread(&self) -> &Thread {
+            &self.thread
+        }
+
+        /// Waits for the associated thread to finish.
+        ///
+        /// This function will return immediately if the associated thread has already finished.
+        ///
+        /// In terms of [atomic memory orderings],  the completion of the associated
+        /// thread synchronizes with this function returning. In other words, all
+        /// operations performed by that thread [happen
+        /// before](https://doc.rust-lang.org/nomicon/atomics.html#data-accesses) all
+        /// operations that happen after `join` returns.
+        ///
+        /// If the associated thread panics, [`Err`] is returned with the parameter given
+        /// to [`panic!`].
+        ///
+        /// [`Err`]: crate::result::Result::Err
+        /// [atomic memory orderings]: crate::sync::atomic
+        ///
+        /// # Panics
+        ///
+        /// This function may panic on some platforms if a thread attempts to join
+        /// itself or otherwise may create a deadlock with joining threads.
+        pub fn join(self) -> Result<T> {
+            loop {
+                if let Some(result) = self.result.lock().unwrap().take() {
+                    return result;
+                }
+                yield_now();
+            }
+        }
+
+        /// Checks if the associated thread has finished running its main function.
+        ///
+        /// `is_finished` supports implementing a non-blocking join operation, by checking
+        /// `is_finished`, and calling `join` if it returns `true`. This function does not block. To
+        /// block while waiting on the thread to finish, use [`join`][Self::join].
+        ///
+        /// This might return `true` for a brief moment after the thread's main
+        /// function has returned, but before the thread itself has stopped running.
+        /// However, once this returns `true`, [`join`][Self::join] can be expected
+        /// to return quickly, without blocking for any significant amount of time.
+        pub fn is_finished(&self) -> bool {
+            Arc::strong_count(&self.result) == 1
+        }
+    }
 
     #[repr(C)]
     #[derive(Default)]
@@ -308,36 +364,47 @@ mod runtime {
             let mut stack = Vec::with_capacity(stack_size_div_16);
             stack.resize_with(stack_size_div_16, Default::default);
 
+            let result = Arc::new(Mutex::new(None));
+
             let args = RuntimeThreadArgs {
-                f: Box::new(|| {
-                    // TODO: catch panics and do something with the result?
-                    let _ = f();
+                f: {
+                    let result = result.clone();
+                    Box::new(move || {
+                        // TODO: is there a way we can catch panics?
+                        let ret = f();
+                        *result.lock().unwrap() = Some(Ok(ret));
+                    })
+                },
+            };
+
+            let mut state = self.state.lock().unwrap();
+
+            let id = ThreadId {
+                id: state.next_thread_id,
+                is_external: false,
+            };
+            state.next_thread_id += 1;
+
+            let handle = Thread {
+                inner: Arc::new(ThreadInner {
+                    id,
+                    name,
+                    stack_addr: stack.as_ptr() as u64,
+                    stack_size: stack.len() * 16,
                 }),
             };
 
-            {
-                let mut state = self.state.lock().unwrap();
-                let id = ThreadId {
-                    id: state.next_thread_id,
-                    is_external: false,
-                };
-                state.next_thread_id += 1;
-                state.queue.push_back(RuntimeThread {
-                    args: Some(args),
-                    registers: Default::default(),
-                    handle: Thread {
-                        inner: Arc::new(ThreadInner {
-                            id,
-                            name,
-                            stack_addr: stack.as_ptr() as u64,
-                            stack_size: stack.len() * 16,
-                        }),
-                    },
-                    stack,
-                });
-            }
+            state.queue.push_back(RuntimeThread {
+                args: Some(args),
+                registers: Default::default(),
+                handle: handle.clone(),
+                stack,
+            });
 
-            JoinHandle(PhantomData)
+            JoinHandle {
+                thread: handle,
+                result,
+            }
         }
     }
 
@@ -352,21 +419,6 @@ mod runtime {
     /// `ThreadId` and the underlying platform's notion of a thread identifier --
     /// the two concepts cannot, therefore, be used interchangeably. A `ThreadId`
     /// can be retrieved from the [`id`] method on a [`Thread`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::thread;
-    ///
-    /// let other_thread = thread::spawn(|| {
-    ///     thread::current().id()
-    /// });
-    ///
-    /// let other_thread_id = other_thread.join().unwrap();
-    /// assert!(thread::current().id() != other_thread_id);
-    /// ```
-    ///
-    /// [`id`]: Thread::id
     #[derive(Eq, PartialEq, Clone, Copy, Hash, Debug)]
     pub struct ThreadId {
         id: u64,
@@ -414,6 +466,18 @@ mod runtime {
         pub fn name(&self) -> Option<&str> {
             self.inner.name.as_ref().map(|s| s.as_str())
         }
+
+        /// Atomically makes the handle's token available if it is not already.
+        ///
+        /// Every thread is equipped with some basic low-level blocking support, via
+        /// the [`park`][park] function and the `unpark()` method. These can be
+        /// used as a more CPU-efficient implementation of a spinlock.
+        ///
+        /// See the [park documentation][park] for more details.
+        #[inline]
+        pub fn unpark(&self) {
+            // TODO: a more efficient implementation?
+        }
     }
 
     /// Thread factory, which can be used in order to configure the properties of
@@ -458,35 +522,12 @@ mod runtime {
         ///
         /// For more information about named threads, see
         /// [this module-level documentation][naming-threads].
-        ///
-        /// # Examples
-        ///
-        /// ```
-        /// use std::thread;
-        ///
-        /// let builder = thread::Builder::new()
-        ///     .name("foo".into());
-        ///
-        /// let handler = builder.spawn(|| {
-        ///     assert_eq!(thread::current().name(), Some("foo"))
-        /// }).unwrap();
-        ///
-        /// handler.join().unwrap();
-        /// ```
         pub fn name(mut self, name: String) -> Builder {
             self.name = Some(name);
             self
         }
 
         /// Sets the size of the stack (in bytes) for the new thread.
-        ///
-        /// # Examples
-        ///
-        /// ```
-        /// use std::thread;
-        ///
-        /// let builder = thread::Builder::new().stack_size(32 * 1024);
-        /// ```
         pub fn stack_size(mut self, size: usize) -> Builder {
             self.stack_size = size;
             self
@@ -501,7 +542,7 @@ mod runtime {
         /// termination of the spawned thread, including recovering its panics.
         ///
         /// For a more complete documentation see [`thread::spawn`][`spawn`].
-        pub fn spawn<F, T>(self, f: F) -> Result<JoinHandle<T>, Infallible>
+        pub fn spawn<F, T>(self, f: F) -> core::result::Result<JoinHandle<T>, Infallible>
         where
             F: FnOnce() -> T,
             F: Send + 'static,
@@ -572,12 +613,81 @@ mod runtime {
         GLOBAL_RUNTIME.yield_now();
     }
 
-    /// This function should be called by a hardware or OS thread. The native thread will
-    /// contribute its CPU time to the runtime's green threads and returns if there are no
-    /// green threads that currently need to be driven (at which point you may just want to
-    /// call this function again).
+    /// This is a non-standard function that should be called by a hardware or OS thread. The
+    /// native thread will contribute its CPU time to the runtime's green threads and returns if
+    /// there are no green threads that currently need to be driven (at which point you may just
+    /// want to call this function again).
     pub fn contribute() {
         GLOBAL_RUNTIME.contribute();
+    }
+
+    /// Blocks unless or until the current thread's token is made available.
+    ///
+    /// A call to `park` does not guarantee that the thread will remain parked
+    /// forever, and callers should be prepared for this possibility.
+    ///
+    /// # park and unpark
+    ///
+    /// Every thread is equipped with some basic low-level blocking support, via the
+    /// [`thread::park`][`park`] function and [`thread::Thread::unpark`][`unpark`]
+    /// method. [`park`] blocks the current thread, which can then be resumed from
+    /// another thread by calling the [`unpark`] method on the blocked thread's
+    /// handle.
+    ///
+    /// Conceptually, each [`Thread`] handle has an associated token, which is
+    /// initially not present:
+    ///
+    /// * The [`thread::park`][`park`] function blocks the current thread unless or
+    ///   until the token is available for its thread handle, at which point it
+    ///   atomically consumes the token. It may also return *spuriously*, without
+    ///   consuming the token. [`thread::park_timeout`] does the same, but allows
+    ///   specifying a maximum time to block the thread for.
+    ///
+    /// * The [`unpark`] method on a [`Thread`] atomically makes the token available
+    ///   if it wasn't already. Because the token is initially absent, [`unpark`]
+    ///   followed by [`park`] will result in the second call returning immediately.
+    ///
+    /// In other words, each [`Thread`] acts a bit like a spinlock that can be
+    /// locked and unlocked using `park` and `unpark`.
+    ///
+    /// Notice that being unblocked does not imply any synchronization with someone
+    /// that unparked this thread, it could also be spurious.
+    /// For example, it would be a valid, but inefficient, implementation to make both [`park`] and
+    /// [`unpark`] return immediately without doing anything.
+    ///
+    /// The API is typically used by acquiring a handle to the current thread,
+    /// placing that handle in a shared data structure so that other threads can
+    /// find it, and then `park`ing in a loop. When some desired condition is met, another
+    /// thread calls [`unpark`] on the handle.
+    ///
+    /// The motivation for this design is twofold:
+    ///
+    /// * It avoids the need to allocate mutexes and condvars when building new
+    ///   synchronization primitives; the threads already provide basic
+    ///   blocking/signaling.
+    ///
+    /// * It can be implemented very efficiently on many platforms.
+    ///
+    /// [`unpark`]: Thread::unpark
+    /// [`thread::park_timeout`]: park_timeout
+    pub fn park() {
+        // TODO: a more efficient implementation?
+        yield_now();
+    }
+
+    /// Blocks unless or until the current thread's token is made available or
+    /// the specified duration has been reached (may wake spuriously).
+    ///
+    /// The semantics of this function are equivalent to [`park`][park] except
+    /// that the thread will be blocked for roughly no longer than `dur`. This
+    /// method should not be used for precise timing due to anomalies such as
+    /// preemption or platform differences that might not cause the maximum
+    /// amount of time waited to be precisely `dur` long.
+    ///
+    /// See the [park documentation][park] for more details.
+    pub fn park_timeout(_dur: Duration) {
+        // TODO: a more efficient implementation?
+        yield_now();
     }
 }
 
@@ -587,12 +697,17 @@ pub use runtime::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "alloc")]
+    use crate::sync::Mutex;
+    #[cfg(feature = "alloc")]
+    use alloc::sync::Arc;
 
     #[test]
     fn test_sleep() {
         sleep(Duration::from_millis(500));
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn test_current_with_os_threads() {
         let a = std::thread::spawn(|| std::thread::current())
@@ -604,30 +719,62 @@ mod tests {
         assert_ne!(a.id(), b.id());
     }
 
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_thread_allocation() {
+        spawn(|| {
+            let mut v = Vec::new();
+            v.push(1);
+        });
+
+        contribute();
+    }
+
+    #[cfg(feature = "alloc")]
     #[test]
     fn test_spawn() {
-        Builder::new()
-            .name("foo".into())
-            .spawn(|| {
-                let t = current();
-                assert_eq!(t.name().unwrap(), "foo");
+        let v = Arc::new(Mutex::new(Vec::new()));
 
-                println!("i'm the thread!");
-                yield_now();
-                println!("i'm still the thread!");
+        let foo = Builder::new()
+            .name("foo".into())
+            .spawn({
+                let v = v.clone();
+                move || {
+                    let t = current();
+                    assert_eq!(t.name().unwrap(), "foo");
+
+                    v.lock().unwrap().push(1);
+                    yield_now();
+                    v.lock().unwrap().push(3);
+
+                    "foo"
+                }
             })
             .unwrap();
 
-        Builder::new()
+        let bar = Builder::new()
             .name("bar".into())
-            .spawn(|| {
-                let t = current();
-                assert_eq!(t.name().unwrap(), "bar");
+            .spawn({
+                let v = v.clone();
+                move || {
+                    let t = current();
+                    assert_eq!(t.name().unwrap(), "bar");
 
-                println!("i'm the other thread!");
+                    v.lock().unwrap().push(2);
+
+                    "bar"
+                }
             })
             .unwrap();
 
         contribute();
+
+        assert!(foo.is_finished());
+        assert_eq!(foo.join().unwrap(), "foo");
+
+        assert!(bar.is_finished());
+        assert_eq!(bar.join().unwrap(), "bar");
+
+        assert_eq!(*v.lock().unwrap(), vec![1, 2, 3]);
     }
 }
