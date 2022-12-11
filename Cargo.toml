@@ -15,5 +15,5 @@ default = ["alloc"]
 alloc = []
 
 [dependencies]
-aarch64-cpu = { git = "https://github.com/ccbrown/aarch64-cpu", rev = "db125991ee5ba515680f555f53475c5a0b6762d0" }
+aarch64-cpu = "9.2.0"
 tock-registers = "0.8.0"
