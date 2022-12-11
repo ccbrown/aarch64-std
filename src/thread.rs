@@ -599,16 +599,17 @@ mod runtime {
         GLOBAL_RUNTIME.yield_now();
     }
 
-    /// This is a non-standard function that should be called by a hardware or OS thread. The
-    /// native thread will contribute its CPU time to the runtime's green threads and returns if
-    /// there are no green threads that currently need to be driven (at which point you may just
+    /// This is a non-standard function that should be called by a hardware or OS thread in order to drive spawned threads.
+    ///
+    /// The native thread will contribute its CPU time to the runtime's green threads and returns
+    /// if there are no green threads that currently need to be driven (at which point you may just
     /// want to call this function again).
     ///
     /// # Safety
     /// User space threads can't reliably detect stack overflows. Some systems have protections in
     /// place that will crash the program on overflow, but others will simply have undefined
-    /// behavior. To use this threads safely, you must ensure that your stack sizes are big enough
-    /// to never overflow.
+    /// behavior. To use spawned threads safely, you must ensure that your stack sizes are big
+    /// enough to never overflow.
     pub unsafe fn contribute() {
         GLOBAL_RUNTIME.contribute();
     }
