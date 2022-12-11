@@ -1,4 +1,4 @@
-# aarch64-std
+# aarch64-std  [![Build](https://img.shields.io/github/workflow/status/ccbrown/aarch64-std/Push?logo=github)](https://github.com/ccbrown/aarch64-std/actions) [![docs](https://img.shields.io/docsrs/aarch64-std?logo=docs.rs)](https://docs.rs/aarch64-std/latest/aarch64_std/) [![crates.io](https://img.shields.io/crates/v/aarch64-std.svg)](https://crates.io/crates/aarch64-std)
 
 aarch64-std implements components from the Rust standard library in a way suitable for `no_std` or bare metal ARM applications.
 
