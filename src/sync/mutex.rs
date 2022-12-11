@@ -6,6 +6,19 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+/// A mutual exclusion primitive useful for protecting shared data
+///
+/// This mutex will block threads waiting for the lock to become available. The
+/// mutex can be created via a [`new`] constructor. Each mutex has a type parameter
+/// which represents the data that it is protecting. The data can only be accessed
+/// through the RAII guards returned from [`lock`] and [`try_lock`], which
+/// guarantees that the data is only ever accessed when the mutex is locked.
+///
+/// # Poisoning
+///
+/// Standard library mutexes can become poisoned when the holder panics. However, this crate's
+/// mutexes do not become poisoned as there's currently no reliable way to detect panics. Poisoning
+/// may be added in the future if it becomes possible.
 #[derive(Debug, Default)]
 pub struct Mutex<T: ?Sized> {
     is_locked: u32,
@@ -133,6 +146,17 @@ impl<T: ?Sized> Mutex<T> {
     }
 }
 
+/// An RAII implementation of a "scoped lock" of a mutex. When this structure is
+/// dropped (falls out of scope), the lock will be unlocked.
+///
+/// The data protected by the mutex can be accessed through this guard via its
+/// [`Deref`] and [`DerefMut`] implementations.
+///
+/// This structure is created by the [`lock`] and [`try_lock`] methods on
+/// [`Mutex`].
+///
+/// [`lock`]: Mutex::lock
+/// [`try_lock`]: Mutex::try_lock
 #[derive(Debug)]
 pub struct MutexGuard<'a, T: ?Sized + 'a> {
     lock: &'a Mutex<T>,

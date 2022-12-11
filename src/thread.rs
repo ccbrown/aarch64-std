@@ -434,7 +434,7 @@ mod runtime {
     }
 
     #[derive(Clone, Debug)]
-    pub struct ThreadInner {
+    struct ThreadInner {
         id: ThreadId,
         name: Option<String>,
         stack_addr: u64,
