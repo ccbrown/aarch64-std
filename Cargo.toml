@@ -2,6 +2,13 @@
 name = "aarch64-std"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "implementations of standard library components for bare-metal aarch64"
+homepage = "https://github.com/ccbrown/aarch64-std"
+repository = "https://github.com/ccbrown/aarch64-std"
+readme = "README.md"
+keywords = ["aarch64", "embedded", "bare-metal", "no-std"]
+categories = ["embedded", "hardware-support", "no-std"]
 
 [features]
 default = ["alloc"]
